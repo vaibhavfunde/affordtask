@@ -1,132 +1,143 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import HeatMapGrid from 'react-heatmap-grid';
 import {
-  Container,
-  Grid,
   Paper,
   Typography,
+  Container,
   CircularProgress,
-  Alert
+  Tooltip,
+  Box,
 } from '@mui/material';
-import { getAuthHeaders } from '../services/authService';
 import axios from 'axios';
+import { getAuthHeaders } from '../services/authService';
 
-// Use relative URL for proxy
 const API_BASE_URL = '/evaluation-service';
 
-const CorrelationHeatmap = () => {
-  const [stocks, setStocks] = useState([]);
-  const [correlationData, setCorrelationData] = useState(null);
+// Utility functions
+const mean = (arr) => arr.reduce((a, b) => a + b, 0) / (arr.length || 1);
+const stddev = (arr, m = mean(arr)) =>
+  Math.sqrt(arr.reduce((sum, v) => sum + (v - m) ** 2, 0) / (arr.length || 1));
+
+const pearsonCorrelation = (x, y) => {
+  const mx = mean(x);
+  const my = mean(y);
+  const cov = x.reduce((sum, xi, i) => sum + (xi - mx) * (y[i] - my), 0);
+  const stdX = stddev(x, mx);
+  const stdY = stddev(y, my);
+  return stdX && stdY ? cov / (x.length * stdX * stdY) : 0;
+};
+
+const CorrelationHeatmap = ({ intervalMinutes = 10 }) => {
   const [loading, setLoading] = useState(false);
-  const [warning, setWarning] = useState(null);
+  const [stockData, setStockData] = useState({});
+  const [stocks, setStocks] = useState([]);
 
   useEffect(() => {
-    const fetchStocks = async () => {
+    const fetchStockPrices = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-        setWarning(null);
-        const headers = await getAuthHeaders();
-        const response = await axios.get(`${API_BASE_URL}/stocks`, { headers });
-        setStocks(response.data);
-      } catch (error) {
-        console.error('Error fetching stocks:', error);
-        setWarning('Unable to fetch stocks at this time. The data shown may be outdated.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchStocks();
-  }, []);
-
-  useEffect(() => {
-    const fetchCorrelationData = async () => {
-      if (stocks.length === 0) return;
-
-      try {
-        setLoading(true);
         const headers = await getAuthHeaders();
         const response = await axios.get(
-          `${API_BASE_URL}/stocks/correlation`,
+          `${API_BASE_URL}/stocks`,
           { headers }
         );
-        setCorrelationData(response.data);
-      } catch (error) {
-        console.error('Error fetching correlation data:', error);
+        const stockList = response.data || [];
+        setStocks(stockList);
+
+        const stockPrices = {};
+        for (const stock of stockList) {
+          const res = await axios.get(
+            `${API_BASE_URL}/stocks/${stock}/prices?timeInterval=${intervalMinutes}M`,
+            { headers }
+          );
+          stockPrices[stock] = res.data.prices.map((p) => p.price);
+        }
+
+        setStockData(stockPrices);
+      } catch (err) {
+        console.error('Error fetching stock data:', err);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchCorrelationData();
-  }, [stocks]);
+    fetchStockPrices();
+  }, [intervalMinutes]);
 
-  const renderHeatmap = () => {
-    if (!correlationData) return null;
-
-    const tableStyle = {
-      width: '100%',
-      borderCollapse: 'collapse',
-      marginTop: '20px',
-    };
-
-    const cellStyle = (value) => ({
-      padding: '8px',
-      textAlign: 'center',
-      backgroundColor: `rgba(75, 192, 192, ${Math.abs(value)})`,
-      color: Math.abs(value) > 0.5 ? 'white' : 'black',
-    });
-
+  if (loading) {
     return (
-      <table style={tableStyle}>
-        <thead>
-          <tr>
-            <th></th>
-            {stocks.map((stock) => (
-              <th key={stock}>{stock}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {stocks.map((stock1) => (
-            <tr key={stock1}>
-              <th>{stock1}</th>
-              {stocks.map((stock2) => (
-                <td key={`${stock1}-${stock2}`} style={cellStyle(correlationData[stock1][stock2])}>
-                  {correlationData[stock1][stock2].toFixed(2)}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <Box display="flex" justifyContent="center" mt={4}>
+        <CircularProgress />
+      </Box>
     );
-  };
+  }
+
+  if (stocks.length === 0 || Object.keys(stockData).length === 0) {
+    return <Typography variant="body1">No data available</Typography>;
+  }
+
+  // Prepare heatmap data
+  const data = stocks.map((stockX) =>
+    stocks.map((stockY) => {
+      const x = stockData[stockX] || [];
+      const y = stockData[stockY] || [];
+      return pearsonCorrelation(x, y).toFixed(2);
+    })
+  );
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Grid container spacing={3}>
-        <Grid item xs={12}>
-          <Paper sx={{ p: 2, display: 'flex', flexDirection: 'column' }}>
-            <Typography variant="h6" gutterBottom>
-              Stock Correlation Heatmap
-            </Typography>
-            {warning && (
-              <Alert severity="warning" sx={{ mb: 2 }}>
-                {warning}
-              </Alert>
-            )}
-            {loading ? (
-              <div style={{ display: 'flex', justifyContent: 'center', padding: '20px' }}>
-                <CircularProgress />
-              </div>
-            ) : (
-              renderHeatmap()
-            )}
-          </Paper>
-        </Grid>
-      </Grid>
+    <Container maxWidth="lg" sx={{ mt: 4 }}>
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h5" gutterBottom>
+          Stock Correlation Heatmap (Last {intervalMinutes} minutes)
+        </Typography>
+        <HeatMapGrid
+          xLabels={stocks}
+          yLabels={stocks}
+          data={data}
+          cellStyle={(background, value, min, max, data, x, y) => {
+            const v = parseFloat(value);
+            let bgColor = '#fff';
+            if (v > 0.75) bgColor = '#1a9850';
+            else if (v > 0.5) bgColor = '#66bd63';
+            else if (v > 0.25) bgColor = '#a6d96a';
+            else if (v > 0) bgColor = '#d9ef8b';
+            else if (v === 0) bgColor = '#ffffbf';
+            else if (v > -0.25) bgColor = '#fee08b';
+            else if (v > -0.5) bgColor = '#fdae61';
+            else if (v > -0.75) bgColor = '#f46d43';
+            else bgColor = '#d73027';
+            return {
+              background: bgColor,
+              fontSize: '14px',
+              color: '#000',
+              textAlign: 'center',
+              padding: '10px',
+            };
+          }}
+          cellRender={(x, y, value) => (
+            <Tooltip
+              title={
+                <>
+                  <div><b>{stocks[y]}</b> vs <b>{stocks[x]}</b></div>
+                  <div>Correlation: <b>{value}</b></div>
+                  <div>Avg: {mean(stockData[stocks[y]]).toFixed(2)}</div>
+                  <div>Std Dev: {stddev(stockData[stocks[y]]).toFixed(2)}</div>
+                </>
+              }
+              arrow
+              placement="top"
+            >
+              <span>{value}</span>
+            </Tooltip>
+          )}
+        />
+        <Typography variant="body2" color="textSecondary" sx={{ mt: 2 }}>
+          Green = strong positive correlation, Red = strong negative correlation, Yellow = neutral.
+        </Typography>
+      </Paper>
     </Container>
   );
 };
 
-export default CorrelationHeatmap; 
+export default CorrelationHeatmap;

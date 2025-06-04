@@ -8,7 +8,7 @@ const AppInitializer = ({ children }) => {
   useEffect(() => {
     const initialize = async () => {
       try {
-        await register();
+       // await register();
       } catch (error) {
         console.error('Initialization error:', error);
       } finally {
